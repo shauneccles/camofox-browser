@@ -5,9 +5,22 @@
   "newPageTimeoutMs": 10000,
   "interactive": { "mode": "off" },
   "plugins": {
-    "youtube": { "enabled": true },
-    "persistence": { "enabled": true },
-    "vnc": { "enabled": false, "resolution": "1920x1080" },
-    "wslg-display": { "enabled": true }
+    "youtube": {
+      "enabled": true
+    },
+    "persistence": {
+      "enabled": true
+    },
+    "vnc": {
+      "enabled": true,
+      "resolution": "1920x1080",
+      "vncPort": 5900,
+      "novncPort": 6080,
+      "viewOnly": false
+    },
+    "wslg-display": {
+      "enabled": true,
+      "claimDisplay": false
+    }
   }
 }
