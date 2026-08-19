@@ -1,0 +1,5 @@
+{
+  "name": "WSLg existing display",
+  "description": "Use the inherited WSLg X display instead of starting Xvfb.",
+  "enableEnvVar": "CAMOFOX_USE_EXISTING_DISPLAY"
+}
