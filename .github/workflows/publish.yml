@@ -5,20 +5,29 @@ on:
     tags:
       - 'v*'
 
+permissions: {}
+
 concurrency:
   group: npm-publish
   cancel-in-progress: false
 
 jobs:
   test:
+    name: Test release candidate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      # No dependency caching in the publishing path: a cache entry written by a
+      # less-trusted workflow run must not be able to influence a released artifact.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - run: npm ci
 
@@ -32,7 +41,6 @@ jobs:
 
       - name: Unit + plugin tests (Jest)
         run: |
-          npm install --no-save jest-junit
           node --experimental-vm-modules node_modules/.bin/jest \
             --testPathPatterns='tests/unit|plugins' \
             --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test' \
@@ -40,20 +48,8 @@ jobs:
         env:
           CI: true
 
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
       - name: Install browser
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps firefox
-
-      - name: Install browser system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps firefox
 
       - name: E2E tests
         run: |
@@ -74,18 +70,22 @@ jobs:
           CI: true
 
   publish:
+    name: Publish packages
     needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write # mints the OIDC token npm uses for trusted publishing and provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Verify tag matches package versions
         run: |

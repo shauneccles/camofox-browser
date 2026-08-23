@@ -2,17 +2,27 @@ name: Deploy Telemetry Endpoint
 
 on:
   push:
-    branches: [master]
+    branches: [local/wslg-native]
     paths:
       - 'workers/crash-reporter/**'
   workflow_dispatch: # manual trigger for initial deploy / redeploy
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy to Cloudflare Workers
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Inject source verification hashes
         run: |
@@ -22,7 +32,7 @@ jobs:
           sed -i "s/__SOURCE_SHA256__/$HASH/" workers/crash-reporter/index.ts
 
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3.14.0
+        uses: cloudflare/wrangler-action@392082e81ffbcb9ebdde27400634aa004b35ea37 # v3.14.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -117,14 +117,17 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p . || true; mkdir -p dist && cp plugin.js dist/plugin.js",
+    "build": "tsc -p . && mkdir -p dist && cp plugin.js dist/plugin.js",
     "prepublishOnly": "npm run build",
     "start": "node server.js",
     "mcp": "node mcp/server.mjs",
     "test:mcp": "npm ci --prefix mcp && node scripts/test-mcp.mjs && node scripts/test-mcp-package.mjs",
-    "test:unit": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/unit",
-    "test": "npm run test:unit && npm run test:e2e && npm run test:plugins",
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
+    "test:unit": "node --experimental-vm-modules node_modules/.bin/jest --testPathPatterns='tests/unit|plugins' --testPathIgnorePatterns='security\\.test|tabRecycling\\.test|cookies\\.test' --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.e2e.cjs --runInBand --forceExit",
+    "test:browser-unit": "node --experimental-vm-modules node_modules/.bin/jest --testPathPatterns='tests/unit/(security|tabRecycling|cookies)\\.test' --runInBand --forceExit",
+    "check": "npm run build && npm run test:mcp && npm run test:unit",
+    "check:full": "npm run check && npm run test:e2e && npm run test:browser-unit",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
     "test:live": "RUN_LIVE_TESTS=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/live",
     "test:debug": "DEBUG_SERVER=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
@@ -149,24 +152,16 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "jest": "^30.4.2",
+    "jest-junit": "^17.0.0",
     "pngjs": "^7.0.0",
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "@jest/reporters": {
-      "glob": "13.0.6"
-    },
     "babel-plugin-istanbul": {
       "test-exclude": "8.0.0"
     },
-    "jest-config": {
-      "glob": "13.0.6"
-    },
-    "jest-runtime": {
-      "glob": "13.0.6"
-    },
-    "swagger-jsdoc": {
-      "glob": "13.0.6"
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "3.15.1"
     }
   },
   "bin": {

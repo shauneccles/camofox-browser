@@ -74,10 +74,10 @@ describe('no embedded secrets in distributed files', () => {
     expect(toml).toContain('name = "camofox-telemetry"');
   });
 
-  test('deploy workflow triggers on worker changes from main', () => {
+  test('deploy workflow triggers on worker changes from the default branch', () => {
     const workflow = readFileSync(join(__dirname, '../../.github/workflows/telemetry-deploy.yml'), 'utf-8');
     expect(workflow).toContain('workers/crash-reporter/**');
-    expect(workflow).toContain('branches: [master]');
+    expect(workflow).toContain('branches: [local/wslg-native]');
     expect(workflow).toContain('CLOUDFLARE_API_TOKEN');
     expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID');
     expect(workflow).toContain('__COMMIT_SHA__');
