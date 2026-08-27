@@ -748,7 +748,7 @@ const healthState = {
 
 // One long-lived probe context. `newContext` is a thunk, not a bound value:
 // `browser` is reassigned by restartBrowser(), and the probe must follow it.
-const healthProbe = createHealthProbe({ newContext: () => browser.newContext() });
+const healthProbe = createHealthProbe({ newContext: () => browser.newContext({ viewport: null }) });
 
 function getUserNavHealth(userId) {
   const key = normalizeUserId(userId);
