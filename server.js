@@ -6639,15 +6639,15 @@ const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
     log('info', 'cleaned up stale firefox profiles on startup', profileCleanup);
   }
 
-  // Periodic temp profile cleanup every 10 minutes
-  setInterval(() => {
-    try {
-      const cleaned = cleanupStaleFirefoxProfiles();
-      if (cleaned.removed > 0) {
-        log('info', 'periodic firefox profile cleanup', cleaned);
-      }
-    } catch { /* best effort */ }
-  }, 10 * 60 * 1000).unref();
+  // Deliberately no periodic profile sweep. cleanupStaleFirefoxProfiles()
+  // cannot distinguish a live browser's profile from an orphan by age alone:
+  // a 2-minute threshold was observed deleting the running browser's own
+  // profile on every sweep (removed:1 each cycle), which breaks
+  // localStorage/IndexedDB in-process and blanks client-rendered pages such
+  // as the SharePoint modern list experience. Startup cleanup (runs before
+  // the browser launches) and close cleanup (runs after the browser is dead)
+  // remain, and cover the orphaned-profile leak from failed browser.close()
+  // that the sweep was added for.
   const traceSweep = sweepOldTraces({
     baseDir: CONFIG.tracesDir,
     ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
