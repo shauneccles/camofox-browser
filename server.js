@@ -1486,14 +1486,37 @@ function handleRouteError(err, req, res, extraFields = {}) {
   // the connection open for 30s). The browser context shares a single proxy session, so
   // one poisoned page kills all subsequent navigations in that context. Destroy the
   // entire session so the next request gets a fresh BrowserContext + proxy.
+  //
+  // Guarded on proxyPool?.canRotateSessions, exactly as the proxy-error branch
+  // above is. The whole justification for destroying a session here is proxy
+  // poisoning -- so with no proxy configured there is nothing to rotate, and
+  // the teardown costs every tab under that userId for no benefit.
+  //
+  // That blast radius is not theoretical. #8559 reported one subagent's timeout
+  // killing every concurrent tab, because parallel callers share a userId.
+  // v1.14.0 fixed the trigger that issue described (bare image URLs now complete
+  // at commit) but left the radius, so any other timeout -- a slow HTML page, a
+  // 500 -- still takes the whole session with it, including a human's tab in a
+  // noVNC session.
+  //
+  // The per-tab consecutive-timeout reaper below is the right granularity when
+  // no proxy is involved, and still handles a genuinely stuck tab.
   const NAVIGATION_TIMEOUT_ACTIONS = new Set(['click', 'navigate', 'open_url']);
-  if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+  const isNavTimeout =
+    isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action);
+  if (isNavTimeout && proxyPool?.canRotateSessions) {
     log('warn', 'navigation timeout — destroying session for fresh proxy', {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
     recordNavFailure(userId);
     destroySession(userId).catch(() => {});
+  } else if (isNavTimeout) {
+    // No proxy to rotate: keep the health signal, spare everyone else's tabs.
+    log('warn', 'navigation timeout — no proxy to rotate, leaving the session up', {
+      action, userId, error: err.message,
+    });
+    recordNavFailure(userId);
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   // (for non-navigation timeouts like type, scroll that don't poison the proxy)
