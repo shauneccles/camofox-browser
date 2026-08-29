@@ -1,37 +1,41 @@
 /**
- * Periodic storage-state checkpointing.
+ * Periodic storage-state checkpointing for camofox-browser.
  *
- * The persistence plugin writes storage state on five events -- session
- * teardown, server shutdown, cookie import, bootstrap-cookie import, and an
- * explicit storage export -- and on no timer. A session that lives a long time
- * and then dies ungracefully (SIGKILL, OOM, browser crash, host reboot) loses
- * every cookie it earned. With a long SESSION_TIMEOUT_MS, which is what you set
- * for an aged authenticated profile, that window is the whole day.
+ * The persistence plugin writes storage state on five events -- bootstrap
+ * cookie import, cookie import, storage export, session teardown and server
+ * shutdown -- and on no timer. A session that lives a long time and then dies
+ * ungracefully (SIGKILL, OOM, browser crash, host reboot) loses every cookie
+ * and origin entry it accumulated, because none of those five fire. The
+ * exposure window is the session lifetime, so it grows with SESSION_TIMEOUT_MS.
  *
- * This closes it from OUTSIDE core. Upstream considered timer-based
- * checkpointing in core and declined it (jo-inc/camofox-browser#7223, closed
- * unmerged) on the grounds that it "adds continuous serialization and
- * coordination even when storage hasn't changed", and suggested it would work
- * as a separate plugin instead. This is that plugin: it uses only the public
- * plugin context, so it rebases cleanly and does not fork core.
+ * Timer-based checkpointing in core was proposed and declined in #7223, on the
+ * grounds that it "adds continuous serialization and coordination even when
+ * storage hasn't changed", with the suggestion that it would work as a separate
+ * plugin. This is that plugin. It uses only the public plugin context and
+ * requires no core changes.
  *
- * It emits the SAME event the vnc plugin's GET /sessions/:userId/storage_state
- * emits, so the persistence plugin does the actual writing and there is exactly
- * one code path that touches the profile on disk. It also means checkpointing
- * no longer depends on the vnc plugin being enabled -- which upstream ships
- * disabled by default, and which was previously the only way to force one.
+ * It emits the same `session:storage:export` event that the vnc plugin's
+ * GET /sessions/:userId/storage_state emits, so the persistence plugin does the
+ * writing and exactly one code path touches the profile on disk. Because
+ * persistence already serialises checkpoints per userId, a periodic checkpoint
+ * cannot race an event-driven one.
  *
- * Off unless configured:
+ * It also decouples on-demand checkpointing from the vnc plugin, which
+ * registers the only route capable of forcing one and which ships disabled.
  *
- *   "plugins": { "persistence-interval": { "enabled": true, "intervalMs": 300000 } }
+ * Off unless configured, in camofox.config.json:
+ *
+ *   "plugins": {
+ *     "persistence-interval": { "enabled": true, "intervalMs": 300000 }
+ *   }
  */
 export async function register(_app, ctx, pluginConfig = {}) {
   const { events, sessions, log } = ctx;
 
   // Note `Number(...) || 0` rather than the `parseInt(env) || default` idiom
-  // used elsewhere in this codebase: there, a zero silently restores the
-  // default. Here zero must mean OFF, because "checkpoint every 0ms" has no
-  // sensible reading and a surprise default would be a busy loop.
+  // used elsewhere: there, a zero silently restores the default. Here zero must
+  // mean off, because "checkpoint every 0ms" has no sensible reading and a
+  // surprise default would be a busy loop.
   const intervalMs = Number(pluginConfig.intervalMs) || 0;
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
     log('info', 'persistence-interval plugin: disabled (set plugins["persistence-interval"].intervalMs)');
@@ -40,7 +44,7 @@ export async function register(_app, ctx, pluginConfig = {}) {
 
   const checkpointAll = async () => {
     // Snapshot the entries first: a session destroyed mid-loop would otherwise
-    // mutate the Map we are iterating.
+    // mutate the Map being iterated.
     for (const [userId, session] of [...sessions.entries()]) {
       try {
         const state = await session?.context?.storageState(ctx.persistenceStorageStateOptions);
