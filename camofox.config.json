@@ -11,6 +11,10 @@
     "persistence": {
       "enabled": true
     },
+    "persistence-interval": {
+      "enabled": true,
+      "intervalMs": 300000
+    },
     "vnc": {
       "enabled": true,
       "resolution": "1920x1080",
