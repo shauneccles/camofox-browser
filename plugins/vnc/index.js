@@ -89,6 +89,25 @@ export async function register(app, ctx, pluginConfig = {}) {
   ctx.createVirtualDisplay = () => new VncVirtualDisplay();
   log('info', 'vnc plugin: overriding Xvfb resolution', { resolution });
 
+  // Pin the browser window to the VNC display. Camoufox otherwise generates a
+  // random window size as part of the fingerprint; with no window manager on
+  // Xvfb nothing maximises or repositions it, so the window lands smaller and
+  // offset from the display VNC clients see. launchOptions() consumes `window`
+  // while building the config, so the pin must happen pre-build -- not on
+  // browser:launching, which fires after the build.
+  const [pinWidth, pinHeight] = resolution.split('x').map(Number);
+  if (Number.isFinite(pinWidth) && Number.isFinite(pinHeight)) {
+    events.on('browser:launch-options', (launchConfig) => {
+      // Only pin when the launch actually uses a virtual display (the path
+      // this plugin owns); headless fallbacks have no window to pin.
+      if (launchConfig.virtual_display === undefined || launchConfig.virtual_display === null) return;
+      launchConfig.window = [pinWidth, pinHeight];
+    });
+    log('info', 'vnc plugin: pinning browser window to display', { width: pinWidth, height: pinHeight });
+  } else {
+    log('warn', 'vnc plugin: cannot parse resolution for window pin', { resolution });
+  }
+
   // --- VNC watcher process ---
   log('info', 'vnc plugin enabled', {
     resolution,

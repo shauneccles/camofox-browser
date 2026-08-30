@@ -284,6 +284,22 @@ describe('vnc plugin', () => {
     });
   });
 
+  test('pins browser window to display resolution on browser:launch-options', async () => {
+    await register(mockApp, ctx, { enabled: true, resolution: '1920x1080' });
+
+    const launchConfig = { virtual_display: ':99' };
+    await events.emitAsync('browser:launch-options', launchConfig);
+    expect(launchConfig.window).toEqual([1920, 1080]);
+  });
+
+  test('does not pin window when launch has no virtual display', async () => {
+    await register(mockApp, ctx, { enabled: true, resolution: '1920x1080' });
+
+    const launchConfig = { virtual_display: undefined };
+    await events.emitAsync('browser:launch-options', launchConfig);
+    expect(launchConfig.window).toBeUndefined();
+  });
+
   test('watcher is killed on server:shutdown', async () => {
     await register(mockApp, ctx, { enabled: true });
 
