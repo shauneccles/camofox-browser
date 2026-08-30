@@ -1109,7 +1109,11 @@ async function launchBrowserInstance() {
           excludeAddons: ['UBO'],
         });
       }
-      const options = await launchOptions({
+      // Pre-build hook: launchOptions() consumes several inputs (notably `window`)
+      // while constructing the fingerprint config, so plugins that need to pin
+      // those must mutate this bag BEFORE launchOptions() runs. The
+      // browser:launching event below only sees the already-built options.
+      const launchConfig = {
         executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : !useDesktopWindow,
         os: hostOS,
@@ -1119,7 +1123,10 @@ async function launchBrowserInstance() {
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
-      });
+      };
+      await pluginEvents.emitAsync('browser:launch-options', launchConfig);
+
+      const options = await launchOptions(launchConfig);
       options.proxy = normalizePlaywrightProxy(options.proxy);
       // Playwright's launcher defaults handleSIGTERM/SIGINT/SIGHUP to true,
       // registering its own process signal handlers that send Browser.close
