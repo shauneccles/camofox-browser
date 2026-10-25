@@ -2038,6 +2038,12 @@
                   "expression": {
                     "type": "string",
                     "description": "JavaScript expression to evaluate."
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 900000,
+                    "description": "Deadline for this evaluate. Defaults to the handler timeout. A timeout keeps the tab."
                   }
                 }
               }
@@ -2093,6 +2099,16 @@
           },
           "503": {
             "description": "Browser session expired; caller should retry to get a fresh session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The evaluate passed timeoutMs (code evaluate_timeout). The tab is kept and the script may still be running.",
             "content": {
               "application/json": {
                 "schema": {
