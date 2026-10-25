@@ -42,12 +42,37 @@ export async function register(_app, ctx, pluginConfig = {}) {
     return;
   }
 
+  // A storageState() that never settles would stall every later checkpoint for
+  // the life of the process, so bound each one and skip a tick while the
+  // previous round is still running.
+  const timeoutMs = Math.min(30000, intervalMs);
+  const bounded = (promise) => {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`storageState timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
+  let running = false;
+
   const checkpointAll = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await checkpointSessions();
+    } finally {
+      running = false;
+    }
+  };
+
+  const checkpointSessions = async () => {
     // Snapshot the entries first: a session destroyed mid-loop would otherwise
     // mutate the Map being iterated.
     for (const [userId, session] of [...sessions.entries()]) {
       try {
-        const state = await session?.context?.storageState(ctx.persistenceStorageStateOptions);
+        const state = await bounded(session?.context?.storageState(ctx.persistenceStorageStateOptions));
         if (!state) continue;
         await events.emitAsync('session:storage:export', {
           userId: String(userId),

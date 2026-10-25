@@ -91,6 +91,32 @@ describe('persistence-interval plugin', () => {
     expect(jest.getTimerCount()).toBe(1);
   });
 
+  test('a storageState that never settles times out instead of stalling the rest', async () => {
+    const seen = [];
+    events.on('session:storage:export', ({ userId }) => seen.push(userId));
+    sessions.set('hung', { context: { storageState: jest.fn(() => new Promise(() => {})) } });
+    sessions.set('alice', fakeSession());
+
+    await register(mockApp, ctx, { intervalMs: 60000 });
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(seen).toEqual([]);
+    await jest.advanceTimersByTimeAsync(30000);
+
+    expect(seen).toEqual(['alice']);
+    expect(ctx.log).toHaveBeenCalledWith('warn', 'persistence-interval: checkpoint failed',
+      expect.objectContaining({ userId: 'hung', error: expect.stringContaining('timed out') }));
+  });
+
+  test('skips a tick while the previous round is still running', async () => {
+    const hung = jest.fn(() => new Promise(() => {}));
+    sessions.set('hung', { context: { storageState: hung } });
+
+    await register(mockApp, ctx, { intervalMs: 1000 });
+    await jest.advanceTimersByTimeAsync(1000);
+    await jest.advanceTimersByTimeAsync(500);
+    expect(hung).toHaveBeenCalledTimes(1);
+  });
+
   test('stops on server:shutdown so the process can exit', async () => {
     await register(mockApp, ctx, { intervalMs: 1000 });
     expect(jest.getTimerCount()).toBe(1);
