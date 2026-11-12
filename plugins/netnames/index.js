@@ -4,7 +4,7 @@
  * Never headers, cookies, tokens, body values or query values; never on disk.
  *
  * Off unless configured, in camofox.config.json:
- *   "plugins": { "netnames": { "enabled": true, "userIds": ["agent1"], "maxEntries": 2000 } }
+ *   "plugins": { "netnames": { "enabled": true, "userIds": ["agent1"], "maxEntries": 2000, "workerHook": false } }
  */
 const MAX_DEFAULT = 2000;
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
@@ -33,11 +33,14 @@ const SECRET_WORD = /(token|secret|password|passwd|signature|sig|apikey|api_key|
 export function maskPath(pathname) {
   let prev = '';
   return pathname.split('/').map((seg) => {
+    // Decode once so a percent-encoded token or key=value cannot dodge the checks.
+    let dec = seg;
+    try { dec = decodeURIComponent(seg); } catch { /* keep raw */ }
     let out = maskSegment(seg);
-    const eq = seg.indexOf('=');
-    if (eq > 0 && SECRET_WORD.test(seg.slice(0, eq))) out = `${seg.slice(0, eq)}=:secret`;
-    else if (seg && prev && SECRET_WORD.test(prev)) out = ':secret';
-    prev = seg;
+    const eq = dec.indexOf('=');
+    if (eq > 0 && SECRET_WORD.test(dec.slice(0, eq))) out = `${dec.slice(0, eq)}=:secret`;
+    else if (dec && prev && SECRET_WORD.test(prev)) out = ':secret';
+    prev = dec;
     return out;
   }).join('/');
 }
@@ -68,6 +71,123 @@ export function shape(request) {
   return entry;
 }
 
+
+// ---- opt-in JS-layer hook: dedicated/shared/blob/module worker requests -------------
+// Playwright's Firefox backend does not report worker fetches, so an init script wraps the
+// Worker and SharedWorker constructors; each worker first installs names-only wrappers on
+// fetch, XMLHttpRequest and WebSocket.send, then loads the original script. Records travel
+// over a same-origin BroadcastChannel to the page, which forwards them to an exposed binding.
+// shortcut: service workers are not wrapped (no constructor to hook), and a wrapped worker's
+// self.location is a blob: URL; relative fetch/importScripts URLs are resolved against the
+// original script URL, other uses of self.location see the blob. Upgrade if a client needs it.
+const BODY_KEYS_SRC = `const BODY_METHODS=new Set(['POST','PUT','PATCH']);` + bodyKeys.toString();
+const HELPERS_SRC = [
+  `const MASKS=[${MASKS.map(([re, label]) => `[${re},${JSON.stringify(label)}]`).join(',')}];`,
+  `const SECRET_WORD=${SECRET_WORD};`,
+  BODY_KEYS_SRC, maskSegment.toString(), maskPath.toString(),
+].join('\n');
+
+// Runs inside pages and workers; must be self-contained apart from the helpers above.
+function core(ctx) {
+  const g = globalThis;
+  const report = ctx.report || ((bc) => (r) => bc.postMessage(r))(new BroadcastChannel('__nn'));
+  const abs = (u) => { try { return new URL(String(u), ctx.original || g.location.href); } catch { return null; } };
+  const rec = (method, url, body, extra) => {
+    try {
+      const u = abs(url);
+      if (!u) return;
+      const m = String(method || 'GET').toUpperCase();
+      const r = { id: Math.random().toString(36).slice(2) + Date.now().toString(36), t: Date.now(), method: m, host: u.host, path: maskPath(u.pathname),
+        query: [...new Set(u.searchParams.keys())], status: null, via: ctx.worker ? 'worker' : 'page-ws' };
+      const keys = typeof body === 'string' ? bodyKeys(extra || m, body) : undefined;
+      if (keys) r.bodyKeys = keys;
+      report(r);
+    } catch { /* never break the page */ }
+  };
+  const resolveInput = (input) => (typeof input === 'string' || input instanceof URL) && ctx.original ? String(abs(input) || input) : input;
+
+  if (ctx.worker) {
+    const of = g.fetch;
+    if (of) g.fetch = function (input, init) {
+      const isReq = typeof Request !== 'undefined' && input instanceof Request;
+      rec(init?.method || (isReq ? input.method : 'GET'), isReq ? input.url : input, init?.body);
+      return of.call(this, resolveInput(input), init);
+    };
+    if (g.XMLHttpRequest) {
+      const oo = g.XMLHttpRequest.prototype.open, os = g.XMLHttpRequest.prototype.send;
+      g.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        this.__nn = [method, url];
+        return oo.call(this, method, resolveInput(url), ...rest);
+      };
+      g.XMLHttpRequest.prototype.send = function (body) {
+        if (this.__nn) rec(this.__nn[0], this.__nn[1], body);
+        return os.call(this, body);
+      };
+    }
+    if (g.importScripts && ctx.original) {
+      const oi = g.importScripts;
+      g.importScripts = (...urls) => oi.apply(g, urls.map((u) => String(abs(u) || u)));
+    }
+  }
+  if (g.WebSocket) {
+    const wsend = g.WebSocket.prototype.send;
+    g.WebSocket.prototype.send = function (data) {
+      rec('WS-SEND', this.url, data, 'POST');
+      return wsend.call(this, data);
+    };
+  }
+  // Wrap worker constructors, including from inside a worker (nested workers).
+  for (const name of ['Worker', 'SharedWorker']) {
+    const Orig = g[name];
+    if (!Orig) continue;
+    const blobs = new Map();
+    const Wrapped = function (url, opts) {
+      if (!new.target) return Orig(url, opts);
+      let boot;
+      try {
+        const u = abs(url);
+        const type = opts && opts.type === 'module' ? 'module' : 'classic';
+        const key = `${type}|${u.href}`;
+        boot = blobs.get(key);
+        if (!boot) {
+          const setup = `${ctx.lib}\n__core({worker:true,original:${JSON.stringify(u.href)},lib:${JSON.stringify(ctx.lib)}});\n`;
+          const mk = (text) => URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+          // Module: static imports run in order and need no top-level await (which dropped early messages).
+          boot = type === 'module'
+            ? mk(`import ${JSON.stringify(mk(setup))};\nimport ${JSON.stringify(u.href)};`)
+            : mk(`${setup}importScripts(${JSON.stringify(u.href)});`);
+          blobs.set(key, boot);
+        }
+      } catch { return new Orig(url, opts); }
+      return new Orig(boot, opts);
+    };
+    Wrapped.prototype = Orig.prototype;
+    g[name] = Wrapped;
+  }
+}
+
+export function hookScript() {
+  const lib = `${HELPERS_SRC}\nconst __core=${core.toString()};`;
+  return `(() => {
+  if (globalThis.__nnHooked) return; globalThis.__nnHooked = true;
+  ${lib}
+  const bc = new BroadcastChannel('__nn');
+  bc.onmessage = (e) => { try { window.__nnReport(e.data); } catch {} };
+  __core({ worker: false, lib: ${JSON.stringify(lib)}, report: (r) => { try { window.__nnReport(r); } catch {} } });
+})();`;
+}
+
+// The binding is page-controlled, so keep only fields of the right type and re-mask the path.
+export function sanitizeRecord(r) {
+  if (!r || typeof r !== 'object') return null;
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const names = (a) => (Array.isArray(a) ? a.filter((k) => typeof k === 'string').slice(0, 100).map((k) => k.slice(0, 100)) : []);
+  const out = { t: Date.now(), method: str(r.method, 10).toUpperCase(), host: str(r.host, 255),
+    path: maskPath(str(r.path, 2000)), query: names(r.query), status: null, fromWorker: true, via: r.via === 'page-ws' ? 'page-ws' : 'worker' };
+  if (Array.isArray(r.bodyKeys)) out.bodyKeys = names(r.bodyKeys);
+  return out.method && out.host ? out : null;
+}
+
 export function register(app, ctx, pluginConfig = {}) {
   const { events, auth, log } = ctx;
   const allow = new Set((pluginConfig.userIds || []).map(String));
@@ -78,20 +198,33 @@ export function register(app, ctx, pluginConfig = {}) {
   const max = Number(pluginConfig.maxEntries) > 0 ? Math.floor(Number(pluginConfig.maxEntries)) : MAX_DEFAULT;
   const buffers = new Map();
 
-  events.on('session:created', ({ userId, context }) => {
+  events.on('session:created', async ({ userId, context }) => {
     const id = String(userId);
     if (!allow.has(id)) return;
     // Bound to this session's own buffer: a late callback after destroy (or after
     // the same user got a new session) can only touch its own, orphaned buffer.
     const buf = [];
     buffers.set(id, buf);
+    const push = (entry) => { buf.push(entry); if (buf.length > max) buf.shift(); };
+    if (pluginConfig.workerHook === true) {
+      try {
+        // Every same-origin page hears the BroadcastChannel, so one record can arrive more than once.
+        const seen = new Set();
+        await context.exposeBinding('__nnReport', (_src, r) => {
+          const e = sanitizeRecord(r);
+          if (!e || (r.id && seen.has(r.id))) return;
+          if (r.id) { seen.add(String(r.id).slice(0, 40)); if (seen.size > 2000) seen.delete(seen.values().next().value); }
+          push(e);
+        });
+        await context.addInitScript(hookScript());
+      } catch (err) { log('warn', 'netnames worker hook failed', { error: String(err && err.message || err) }); }
+    }
     const entries = new WeakMap();
     context.on('request', (request) => {
       try {
         const entry = shape(request);
         entries.set(request, entry);
-        buf.push(entry);
-        if (buf.length > max) buf.shift();
+        push(entry);
       } catch { /* unparsable url */ }
     });
     context.on('requestfinished', async (request) => {
@@ -111,7 +244,7 @@ export function register(app, ctx, pluginConfig = {}) {
    * @openapi
    * /plugins/netnames/{userId}:
    *   get:
-   *     tags: [Plugins]
+   *     tags: [System]
    *     summary: Read recorded request shapes
    *     description: Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.
    *     security:
@@ -137,7 +270,7 @@ export function register(app, ctx, pluginConfig = {}) {
    * @openapi
    * /plugins/netnames/{userId}:
    *   delete:
-   *     tags: [Plugins]
+   *     tags: [System]
    *     summary: Clear recorded request shapes
    *     description: Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.
    *     security:

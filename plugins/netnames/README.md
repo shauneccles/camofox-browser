@@ -5,7 +5,7 @@ Records the shape of browser requests for allow-listed sessions, so an investiga
 Enable in `camofox.config.json` (restart required):
 
 ```json
-"plugins": { "netnames": { "enabled": true, "userIds": ["agent1"], "maxEntries": 2000 } }
+"plugins": { "netnames": { "enabled": true, "userIds": ["agent1"], "maxEntries": 2000, "workerHook": false } }
 ```
 
 Endpoints (API key or loopback, like other plugins): `GET /plugins/netnames/:userId` returns the buffer; `DELETE` clears it.
@@ -18,6 +18,18 @@ Method, host, path with ids masked (`:guid`, `:thread` for `19:...@thread`, `:he
 
 Headers, cookies, tokens, query values, body values. Nothing is written to disk. The buffer is dropped when the session is destroyed.
 
+## Worker hook (opt-in)
+
+Playwright's Firefox backend does not report fetches made by workers (measured with a local page: dedicated, blob, module, shared and service workers were all missing). Set `"workerHook": true` and the plugin installs an init script that wraps the `Worker` and `SharedWorker` constructors (also from inside workers). Each worker first installs wrappers on `fetch`, `XMLHttpRequest` and `WebSocket.send`, then loads the original script (classic: `importScripts`; module: static import). The page also wraps `WebSocket.send`. Records carry the same names-only shape (WebSocket frames: method `WS-SEND`, top-level keys of JSON frames) with `via` set to `worker` or `page-ws`, and reach the buffer through a same-origin BroadcastChannel and an exposed binding that re-sanitises and re-masks every record.
+
+Limits of the hook:
+
+- Service worker requests are not captured (no constructor to wrap).
+- A wrapped worker's `self.location` is a blob URL; relative `fetch`, XHR and `importScripts` URLs are resolved against the original script, other uses of `self.location` see the blob.
+- A SharedWorker is no longer shared across tabs (each page makes its own bootstrap blob).
+- Request or body objects that are not strings (Request bodies, Blob, ArrayBuffer) give no body key names.
+- A page with a Content-Security-Policy that blocks `blob:` workers will not start wrapped workers.
+
 ## Limits
 
-Playwright's Worker object has no request events, and its Firefox backend attaches network listeners to the page session only. Dedicated-worker fetches may therefore be missing; `fromWorker` is true only for service-worker requests.
+Without the hook, Playwright's Worker object has no request events and its Firefox backend attaches network listeners to the page session only, so worker fetches are missing; `fromWorker` is true only for service-worker requests.

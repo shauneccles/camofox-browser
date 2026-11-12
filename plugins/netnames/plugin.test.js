@@ -1,7 +1,8 @@
 import { jest } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { createPluginEvents } from '../../lib/plugins.js';
-import { register, maskPath, bodyKeys } from './index.js';
+import vm from 'node:vm';
+import { register, maskPath, bodyKeys, sanitizeRecord, hookScript } from './index.js';
 
 const GUID = '123e4567-e89b-12d3-a456-426614174000';
 
@@ -52,6 +53,12 @@ describe('netnames', () => {
     expect(routes).toEqual({});
     expect(ctx.log).toHaveBeenCalledWith('info', expect.stringContaining('disabled'));
     expect(setup({ enabled: true }).routes).toEqual({});
+  });
+
+  test('masks percent-encoded secrets', () => {
+    expect(maskPath('/a/reset/abc%2Fdef%20ghi')).toBe('/a/reset/:secret');
+    expect(maskPath('/a/api%5Fkey%3Dhunter2/b')).toBe('/a/api_key=:secret/b');
+    expect(maskPath('/a/to%6Ben/hunter2')).toBe('/a/to%6Ben/:secret');
   });
 
   test('masks each id shape', () => {
@@ -125,5 +132,35 @@ describe('netnames', () => {
     const { routes, authMw } = setup({ enabled: true, userIds: ['u1'] });
     expect(routes['GET /plugins/netnames/:userId'][0]).toBe(authMw);
     expect(routes['DELETE /plugins/netnames/:userId'][0]).toBe(authMw);
+  });
+
+  describe('worker hook', () => {
+    test('sanitizeRecord keeps names only and re-masks the path', () => {
+      const e = sanitizeRecord({ method: 'post', host: 'a.b', path: '/x/reset/abc123', query: ['q', 5], bodyKeys: ['k'], token: 'SECRET', headers: { a: 1 } });
+      expect(e).toMatchObject({ method: 'POST', host: 'a.b', path: '/x/reset/:secret', query: ['q'], bodyKeys: ['k'], fromWorker: true });
+      expect(JSON.stringify(e)).not.toMatch(/SECRET|abc123/);
+      expect(sanitizeRecord(null)).toBeNull();
+      expect(sanitizeRecord({ host: 'a' })).toBeNull();
+    });
+
+    test('hook wraps WebSocket.send and Worker, reporting names only', () => {
+      const reports = [];
+      const made = [];
+      class WebSocket { constructor() { this.url = `ws://h.test/s/${GUID}?k=v`; } send() {} }
+      class Worker { constructor(u, o) { made.push([u, o]); } }
+      const sandbox = { WebSocket, Worker, URL, Blob, window: { __nnReport: (r) => reports.push(r) },
+        BroadcastChannel: class { postMessage() {} }, location: { href: 'http://h.test/' } };
+      sandbox.URL = Object.assign(function U(...a) { return new URL(...a); }, { createObjectURL: () => 'blob:x' });
+      sandbox.URL.prototype = URL.prototype;
+      sandbox.globalThis = sandbox;
+      vm.runInNewContext(hookScript(), sandbox);
+      new sandbox.WebSocket().send(JSON.stringify({ secretName: 'secretValue' }));
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({ method: 'WS-SEND', host: 'h.test', path: '/s/:guid', query: ['k'], bodyKeys: ['secretName'] });
+      expect(JSON.stringify(reports)).not.toContain('secretValue');
+      new sandbox.Worker('/w.js', { name: 'n' });
+      expect(made[0][0]).toBe('blob:x');
+      expect(made[0][1]).toEqual({ name: 'n' });
+    });
   });
 });
