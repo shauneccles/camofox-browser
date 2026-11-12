@@ -11,6 +11,7 @@ const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 // Order matters: thread ids and GUIDs before the generic runs they contain.
 const MASKS = [
+  [/^eyJ[\w-]*\.[\w-]+\.[\w-]*$/, ':jwt'],
   [/^\d+:[^/]*@thread[\w.]*$/i, ':thread'],
   [/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, ':guid'],
   [/^[0-9a-f]{16,}$/i, ':hex'],
@@ -25,8 +26,20 @@ export function maskSegment(seg) {
   return seg;
 }
 
+// A segment that follows a secret-bearing word, or is itself key=value with one,
+// is a credential whatever it looks like (e.g. /reset/<opaque-token>).
+const SECRET_WORD = /(token|secret|password|passwd|signature|sig|apikey|api_key|key|code|reset|verify|invite|confirm|activate)$/i;
+
 export function maskPath(pathname) {
-  return pathname.split('/').map(maskSegment).join('/');
+  let prev = '';
+  return pathname.split('/').map((seg) => {
+    let out = maskSegment(seg);
+    const eq = seg.indexOf('=');
+    if (eq > 0 && SECRET_WORD.test(seg.slice(0, eq))) out = `${seg.slice(0, eq)}=:secret`;
+    else if (seg && prev && SECRET_WORD.test(prev)) out = ':secret';
+    prev = seg;
+    return out;
+  }).join('/');
 }
 
 export function bodyKeys(method, postData) {
@@ -65,39 +78,82 @@ export function register(app, ctx, pluginConfig = {}) {
   const max = Number(pluginConfig.maxEntries) > 0 ? Math.floor(Number(pluginConfig.maxEntries)) : MAX_DEFAULT;
   const buffers = new Map();
 
-  const push = (userId, entry) => {
-    const buf = buffers.get(userId);
-    buf.push(entry);
-    if (buf.length > max) buf.shift();
-  };
-
   events.on('session:created', ({ userId, context }) => {
     const id = String(userId);
     if (!allow.has(id)) return;
-    buffers.set(id, []);
-    const pending = new WeakMap();
+    // Bound to this session's own buffer: a late callback after destroy (or after
+    // the same user got a new session) can only touch its own, orphaned buffer.
+    const buf = [];
+    buffers.set(id, buf);
+    const entries = new WeakMap();
     context.on('request', (request) => {
-      try { pending.set(request, shape(request)); } catch { /* unparsable url */ }
+      try {
+        const entry = shape(request);
+        entries.set(request, entry);
+        buf.push(entry);
+        if (buf.length > max) buf.shift();
+      } catch { /* unparsable url */ }
     });
     context.on('requestfinished', async (request) => {
-      const entry = pending.get(request);
+      const entry = entries.get(request);
       if (!entry) return;
       try { entry.status = (await request.response())?.status() ?? null; } catch { /* gone */ }
-      push(id, entry);
     });
     context.on('requestfailed', (request) => {
-      const entry = pending.get(request);
-      if (entry) push(id, entry);
+      const entry = entries.get(request);
+      if (entry) entry.failed = true;
     });
   });
 
   events.on('session:destroyed', ({ userId }) => buffers.delete(String(userId)));
 
+  /**
+   * @openapi
+   * /plugins/netnames/{userId}:
+   *   get:
+   *     tags: [Plugins]
+   *     summary: Read recorded request shapes
+   *     description: Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.
+   *     security:
+   *       - BearerAuth: []
+   *     parameters:
+   *       - name: userId
+   *         in: path
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       200:
+   *         description: Buffer entries.
+   *       404:
+   *         description: User is not allow-listed or has no session.
+   */
   app.get('/plugins/netnames/:userId', auth(), (req, res) => {
     const buf = buffers.get(String(req.params.userId));
     if (!buf) return res.status(404).json({ error: 'not recorded' });
     res.json({ count: buf.length, entries: buf });
   });
+  /**
+   * @openapi
+   * /plugins/netnames/{userId}:
+   *   delete:
+   *     tags: [Plugins]
+   *     summary: Clear recorded request shapes
+   *     description: Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.
+   *     security:
+   *       - BearerAuth: []
+   *     parameters:
+   *       - name: userId
+   *         in: path
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       200:
+   *         description: Cleared.
+   *       404:
+   *         description: User is not allow-listed or has no session.
+   */
   app.delete('/plugins/netnames/:userId', auth(), (req, res) => {
     const buf = buffers.get(String(req.params.userId));
     if (!buf) return res.status(404).json({ error: 'not recorded' });

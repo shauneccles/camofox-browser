@@ -59,6 +59,11 @@ describe('netnames', () => {
     expect(maskPath('/a/0123456789abcdef0123/b')).toBe('/a/:hex/b');
     expect(maskPath('/a/QWxhZGRpbjpvcGVuIHNlc2FtZQQWxhZGRpbjpvcGVu/b')).toBe('/a/:b64/b');
     expect(maskPath('/a/12345678/b/123456')).toBe('/a/:num/b/123456');
+    expect(maskPath('/verify/eyJhbGciOi.eyJzdWIiOiIx.sig_-x/b')).toBe('/verify/:secret/b');
+    expect(maskPath('/a/eyJhbGciOi.eyJzdWIiOiIx.sig_-x')).toBe('/a/:jwt');
+    expect(maskPath('/oauth/access_token/abc-def/x')).toBe('/oauth/access_token/:secret/x');
+    expect(maskPath('/cb/access_token=abc.def')).toBe('/cb/access_token=:secret');
+    expect(maskPath('/reset/opaque-word')).toBe('/reset/:secret');
     expect(maskPath('/a/19%3Aabc%40thread.v2/b')).toBe('/a/:thread/b');
   });
 
@@ -91,6 +96,29 @@ describe('netnames', () => {
     expect(res.body.entries.map((e) => e.path)).toEqual(['/p2', '/p3', '/p4']);
     call(routes, 'DELETE /plugins/netnames/:userId', 'u1');
     expect(call(routes, 'GET /plugins/netnames/:userId', 'u1').body.count).toBe(0);
+  });
+
+  test('records at request time, so in-flight and failed requests show', async () => {
+    const { events, routes } = setup({ enabled: true, userIds: ['u1'] });
+    const c = await session(events, 'u1');
+    const open = fakeRequest('https://x.example/stream');
+    const bad = fakeRequest('https://x.example/bad');
+    c.emit('request', open);
+    c.emit('request', bad);
+    c.emit('requestfailed', bad);
+    const e = call(routes, 'GET /plugins/netnames/:userId', 'u1').body.entries;
+    expect(e.map((x) => [x.path, x.status, !!x.failed])).toEqual([['/stream', null, false], ['/bad', null, true]]);
+  });
+
+  test('a completion after session destroy does not throw', async () => {
+    const { events, routes } = setup({ enabled: true, userIds: ['u1'] });
+    const c = await session(events, 'u1');
+    const r = fakeRequest('https://x.example/a');
+    c.emit('request', r);
+    c.emit('requestfinished', r);
+    await events.emitAsync('session:destroyed', { userId: 'u1' });
+    await new Promise((x) => setImmediate(x));
+    expect(call(routes, 'GET /plugins/netnames/:userId', 'u1').statusCode).toBe(404);
   });
 
   test('endpoints sit behind the auth middleware', () => {
