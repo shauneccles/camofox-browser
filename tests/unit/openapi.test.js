@@ -24,7 +24,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'),
 // Build spec from JSDoc in server.js
 const spec = swaggerJsdoc({
   definition: swaggerDefinition,
-  apis: [serverPath],
+  apis: [serverPath, join(__dirname, '..', '..', 'plugins', 'netnames', 'index.js')],
 });
 
 /**
@@ -77,7 +77,7 @@ describe('OpenAPI spec', () => {
         if (method.startsWith('x-')) continue; // skip extensions
         const expressPath = oaPath.replace(/\{(\w+)\}/g, ':$1');
         const key = `${method.toUpperCase()} ${expressPath}`;
-        if (!serverRoutes.has(key)) {
+        if (!serverRoutes.has(key) && !oaPath.startsWith('/plugins/')) { // plugin routes live in their own files
           stale.push(key);
         }
       }

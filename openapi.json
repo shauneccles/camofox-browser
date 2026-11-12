@@ -2954,6 +2954,68 @@
           }
         }
       }
+    },
+    "/plugins/netnames/{userId}": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "Read recorded request shapes",
+        "description": "Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Buffer entries."
+          },
+          "404": {
+            "description": "User is not allow-listed or has no session."
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "Clear recorded request shapes",
+        "description": "Only registered when the netnames plugin is enabled. Holds request shapes (masked path, key names), never values.",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cleared."
+          },
+          "404": {
+            "description": "User is not allow-listed or has no session."
+          }
+        }
+      }
     }
   }
 }
