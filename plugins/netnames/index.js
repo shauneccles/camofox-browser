@@ -186,13 +186,14 @@ function core(ctx) {
           // Module: static imports run in order and need no top-level await (which dropped early messages).
           boot = type === 'module'
             ? mk(`import ${JSON.stringify(mk(setup))};\nimport ${JSON.stringify(u.href)};`)
-            : mk(`${setup}importScripts(${JSON.stringify(u.href)});`);
+            : mk(`(() => {\n${setup}})();\nimportScripts(${JSON.stringify(u.href)});`);
           blobs.set(key, boot);
         }
-      } catch { return new Orig(url, opts); }
-      return new Orig(boot, opts);
+      } catch { return Reflect.construct(Orig, [url, opts], new.target); }
+      return Reflect.construct(Orig, [boot, opts], new.target); // new.target keeps subclass prototypes
     };
     Wrapped.prototype = Orig.prototype;
+    Object.setPrototypeOf(Wrapped, Orig);
     g[name] = Wrapped;
   }
 }
@@ -202,7 +203,13 @@ function core(ctx) {
 // same route, so no constructor is wrapped.
 export function workerPrelude(booleans = false) {
   const lib = `${HELPERS_SRC}\nconst __core=${core.toString()};`;
-  return `;{${lib}\n__core({worker:true,noWrap:true,booleans:${booleans}});}\n`;
+  return `;(() => {${lib}\n__core({worker:true,noWrap:true,booleans:${booleans}});})();\n`;
+}
+
+// Keep a leading 'use strict' directive first, or the prelude would silently turn strict mode off.
+export function withPrelude(prelude, text) {
+  const m = /^(\s*(?:\/\/[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(['"])use strict\2;?)/.exec(text);
+  return m ? m[1] + '\n' + prelude + text.slice(m[1].length) : prelude + text;
 }
 
 const WORKER_DESTS = new Set(['worker', 'sharedworker', 'serviceworker']);
@@ -274,7 +281,7 @@ export function register(app, ctx, pluginConfig = {}) {
               const resp = await route.fetch();
               const type = resp.headers()['content-type'] || '';
               if (resp.status() !== 200 || !/javascript|ecmascript|text\/plain|^$/i.test(type)) return await route.fulfill({ response: resp });
-              await route.fulfill({ response: resp, body: prelude + await resp.text() });
+              await route.fulfill({ response: resp, body: withPrelude(prelude, await resp.text()) });
             } catch { try { await route.continue(); } catch { /* handled */ } }
           });
         }

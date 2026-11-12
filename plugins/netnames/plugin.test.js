@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { createPluginEvents } from '../../lib/plugins.js';
 import vm from 'node:vm';
-import { register, maskPath, bodyKeys, sanitizeRecord, hookScript, bodyShape } from './index.js';
+import { register, maskPath, bodyKeys, sanitizeRecord, hookScript, bodyShape, withPrelude } from './index.js';
 
 const GUID = '123e4567-e89b-12d3-a456-426614174000';
 
@@ -152,6 +152,12 @@ describe('netnames', () => {
   });
 
   describe('worker hook', () => {
+    test('prelude goes after a use strict directive, else first', () => {
+      expect(withPrelude('P;', "'use strict';var a=1")).toBe("'use strict';\nP;var a=1");
+      expect(withPrelude('P;', '// c\n"use strict"\nvar a')).toMatch(/^\/\/ c\n"use strict"\nP;/);
+      expect(withPrelude('P;', 'var a=1')).toBe('P;var a=1');
+    });
+
     test('sanitizeRecord keeps names only and re-masks the path', () => {
       const e = sanitizeRecord({ method: 'post', host: 'a.b', path: '/x/reset/abc123', query: ['q', 5], bodyKeys: ['k'], token: 'SECRET', headers: { a: 1 } });
       expect(e).toMatchObject({ method: 'POST', host: 'a.b', path: '/x/reset/:secret', query: ['q'], bodyKeys: ['k'], fromWorker: true });
