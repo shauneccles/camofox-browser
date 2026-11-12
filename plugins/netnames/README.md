@@ -14,9 +14,15 @@ Endpoints (API key or loopback, like other plugins): `GET /plugins/netnames/:use
 
 Method, host, path with ids masked (`:guid`, `:thread` for `19:...@thread`, `:hex`, `:b64`, `:num` for 7+ digits), query key names, status, whether the request came from a service worker, top-level JSON body key names for POST/PUT/PATCH. Kept in a ring buffer (default 2000 per user), in memory only.
 
+## Worker hook options
+
+- `workerHookMode: "route"` (use this for real web apps): instead of the blob bootstrap, prepends the wrappers to each worker script response through `context.route` (requests with `Sec-Fetch-Dest` worker, sharedworker or serviceworker). The worker keeps its own URL and `self.location`; the blob bootstrap broke the Teams web client. Limits: blob-URL workers are not routed, and static imports of a module worker run before the prepended code.
+- `bodyBooleans: true`: body shapes (`bodyShape`: nested key names with value types, a JSON object carried in a string is opened one level) also show boolean values and integers under 1000 (setting flags and enums). Off by default.
+- Records from the hook also carry `headerNames` (lower-case header names, never values) and `bodyShape`.
+
 ## Never records
 
-Headers, cookies, tokens, query values, body values. Nothing is written to disk. The buffer is dropped when the session is destroyed.
+Header values, cookies, tokens, query values, body values (booleans and small integers only with `bodyBooleans`). Nothing is written to disk. The buffer is dropped when the session is destroyed.
 
 ## Worker hook (opt-in)
 

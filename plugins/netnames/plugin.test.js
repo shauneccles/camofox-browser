@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { createPluginEvents } from '../../lib/plugins.js';
 import vm from 'node:vm';
-import { register, maskPath, bodyKeys, sanitizeRecord, hookScript } from './index.js';
+import { register, maskPath, bodyKeys, sanitizeRecord, hookScript, bodyShape } from './index.js';
 
 const GUID = '123e4567-e89b-12d3-a456-426614174000';
 
@@ -59,6 +59,13 @@ describe('netnames', () => {
     expect(maskPath('/a/reset/abc%2Fdef%20ghi')).toBe('/a/reset/:secret');
     expect(maskPath('/a/api%5Fkey%3Dhunter2/b')).toBe('/a/api_key=:secret/b');
     expect(maskPath('/a/to%6Ben/hunter2')).toBe('/a/to%6Ben/:secret');
+  });
+
+  test('path masking is idempotent, so a record masked in the page survives the binding', () => {
+    for (const p of [`/v1/${GUID}/x/reset/abc%2Fdef`, '/a/api%5Fkey%3Dhunter2/b', '/t/19:abc@thread.v2/m', '/a/0123456789abcdef0123/QWxhZGRpbjpvcGVuIHNlc2FtZQQWxhZGRpbjpvcGVu', '/100%/x']) {
+      expect(maskPath(maskPath(p))).toBe(maskPath(p));
+    }
+    expect(sanitizeRecord({ method: 'GET', host: 'h', path: maskPath(`/a/${GUID}/token/zzz`) }).path).toBe('/a/:guid/token/:secret');
   });
 
   test('masks each id shape', () => {
@@ -134,6 +141,16 @@ describe('netnames', () => {
     expect(routes['DELETE /plugins/netnames/:userId'][0]).toBe(authMw);
   });
 
+  test('bodyShape keeps nested key names and value types, never values', () => {
+    const s = bodyShape(JSON.stringify({ a: { b: true, c: 'SECRETVALUE', [GUID]: 1 }, d: [1], e: null }));
+    expect(s).toEqual({ a: { b: 'boolean', c: 'string', ':guid': 'number' }, d: 'array', e: 'null' });
+    expect(JSON.stringify(s)).not.toContain('SECRETVALUE');
+    expect(bodyShape('[1]')).toBeUndefined();
+    expect(bodyShape(JSON.stringify({ longAlphabeticSettingNameHere: true }), 5, true)).toEqual({ longAlphabeticSettingNameHere: 'true' });
+    expect(bodyShape(JSON.stringify({ s: JSON.stringify({ allow: true }) }))).toEqual({ s: { '(json string)': { allow: 'boolean' } } });
+    expect(sanitizeRecord({ method: 'PUT', host: 'h', path: '/', bodyShape: { a: 'boolean', v: 'LEAKED?' } }).bodyShape).toEqual({ a: 'boolean', v: 'string' });
+  });
+
   describe('worker hook', () => {
     test('sanitizeRecord keeps names only and re-masks the path', () => {
       const e = sanitizeRecord({ method: 'post', host: 'a.b', path: '/x/reset/abc123', query: ['q', 5], bodyKeys: ['k'], token: 'SECRET', headers: { a: 1 } });
@@ -158,6 +175,7 @@ describe('netnames', () => {
       expect(reports).toHaveLength(1);
       expect(reports[0]).toMatchObject({ method: 'WS-SEND', host: 'h.test', path: '/s/:guid', query: ['k'], bodyKeys: ['secretName'] });
       expect(JSON.stringify(reports)).not.toContain('secretValue');
+      sandbox.document = { baseURI: 'http://h.test/base/' };
       new sandbox.Worker('/w.js', { name: 'n' });
       expect(made[0][0]).toBe('blob:x');
       expect(made[0][1]).toEqual({ name: 'n' });
